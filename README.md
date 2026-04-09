@@ -1,5 +1,7 @@
 # Video Share Alert
 
+> **AVISO:** Por el momento el programa funciona unicamente con el chat abierto. Proximamente se agregara soporte para activar la alerta mediante puntos del canal, donaciones de Bits y donaciones de dinero.
+
 Overlay para OBS que detecta links de video en el chat de Twitch y los reproduce automáticamente en pantalla. Cuando un espectador pega un link de YouTube, TikTok, Instagram o Twitch Clips en el chat, aparece una alerta con el video reproduciéndose.
 
 ---
