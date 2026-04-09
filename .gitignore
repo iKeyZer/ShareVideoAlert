@@ -1,0 +1,16 @@
+# PyInstaller
+build/
+dist/
+*.spec
+*.ico
+
+# Videos temporales
+temp_video_*.mp4
+
+# Configuracion del usuario
+config.json
+
+# Python cache
+__pycache__/
+*.pyc
+*.pyo

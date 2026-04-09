@@ -1,0 +1,461 @@
+<!DOCTYPE html>
+<html lang="es">
+<head>
+<meta charset="UTF-8">
+<title>Video Share Alert v2</title>
+<style>
+* { margin: 0; padding: 0; box-sizing: border-box; }
+body {
+  background: transparent;
+  font-family: 'Segoe UI', Arial, sans-serif;
+  display: inline-block;
+}
+
+/* Ventana que recorta la animación de slide y se adapta al contenido */
+#clip {
+  width: 600px;
+  overflow: hidden;
+  padding: 4px; /* evita que el border-radius se corte */
+}
+
+#alert-container {
+  width: 380px;
+  margin-left: auto; /* alineado a la derecha dentro del clip */
+  opacity: 0;
+  transform: translateX(calc(100% + 8px));
+  transition: opacity 0.4s ease, transform 0.4s ease;
+}
+#alert-container.wide {
+  width: 580px;
+}
+#alert-container.visible {
+  opacity: 1;
+  transform: translateX(0);
+}
+#alert-container.hiding {
+  opacity: 0;
+  transform: translateX(calc(100% + 8px));
+}
+.alert-box {
+  background: rgba(10,10,15,0.95);
+  border: 2px solid #9147ff;
+  border-radius: 12px;
+  overflow: hidden;
+}
+.alert-header {
+  background: #9147ff;
+  padding: 8px 12px;
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+.alert-header .lbl {
+  font-size: 11px;
+  font-weight: 700;
+  color: white;
+  text-transform: uppercase;
+  letter-spacing: 1px;
+  flex: 1;
+}
+#platform-badge {
+  font-size: 10px;
+  font-weight: 700;
+  padding: 2px 8px;
+  border-radius: 20px;
+  background: #ff0000;
+  color: white;
+}
+.share-text {
+  font-size: 11px;
+  color: rgba(255,255,255,0.55);
+  padding: 7px 12px 5px;
+}
+.share-text b { color: #9147ff; }
+.video-frame {
+  width: 100%;
+  background: #111;
+  position: relative;
+}
+.video-frame iframe,
+.video-frame video {
+  width: 100%;
+  height: 100%;
+  border: none;
+  display: block;
+  position: absolute;
+  top: 0; left: 0;
+  object-fit: cover;
+}
+#loading-overlay {
+  display: none;
+  position: absolute;
+  top: 0; left: 0;
+  width: 100%; height: 100%;
+  background: rgba(0,0,0,0.7);
+  align-items: center;
+  justify-content: center;
+  flex-direction: column;
+  gap: 10px;
+  z-index: 5;
+}
+#loading-overlay .spinner {
+  width: 32px; height: 32px;
+  border: 3px solid rgba(255,255,255,0.2);
+  border-top-color: white;
+  border-radius: 50%;
+  animation: spin 0.8s linear infinite;
+}
+#loading-overlay .loading-txt {
+  color: white;
+  font-size: 11px;
+  font-weight: 600;
+  letter-spacing: 1px;
+}
+@keyframes spin { to { transform: rotate(360deg); } }
+.video-info { padding: 9px 12px 11px; }
+.video-title {
+  font-size: 12px;
+  font-weight: 600;
+  color: #fff;
+  line-height: 1.35;
+  margin-bottom: 3px;
+}
+.video-meta { font-size: 10px; color: rgba(255,255,255,0.4); }
+</style>
+</head>
+<body>
+
+<div id="clip">
+<div id="alert-container">
+  <div class="alert-box">
+    <div class="alert-header">
+      <svg width="14" height="14" viewBox="0 0 24 24" fill="white"><path d="M8 5v14l11-7z"/></svg>
+      <span class="lbl">Video compartido</span>
+      <span id="platform-badge">YouTube</span>
+    </div>
+    <div class="share-text"><b id="share-username">usuario</b> compartió un video</div>
+    <div class="video-frame">
+      <iframe id="video-iframe" src="" allowfullscreen allow="autoplay; encrypted-media; picture-in-picture"></iframe>
+      <video id="direct-video" autoplay playsinline></video>
+      <div id="loading-overlay">
+        <div class="spinner"></div>
+        <div class="loading-txt">Obteniendo video...</div>
+      </div>
+    </div>
+    <div class="video-info">
+      <div class="video-title" id="video-title">Cargando...</div>
+      <div class="video-meta" id="video-meta"></div>
+    </div>
+  </div>
+</div>
+</div>
+
+<script>
+var _p = new URLSearchParams(window.location.search);
+var CHANNEL = _p.get('channel') || 'tu_canal';
+var DISPLAY_DURATION = (parseInt(_p.get('duration')) || 10) * 1000;
+var hideTimer = null;
+var ws = null;
+
+// Cola de alertas
+var alertQueue = [];
+var alertBusy  = false;
+
+var log = function(msg) {
+  console.log('[alert]', msg);
+};
+
+function getYouTubeId(url) {
+  var m = url.match(/(?:youtu\.be\/|youtube\.com\/(?:watch\?v=|shorts\/|embed\/))([a-zA-Z0-9_-]{11})/);
+  return m ? m[1] : null;
+}
+function getTwitchClip(url) {
+  var m = url.match(/twitch\.tv\/\S+\/clip\/([a-zA-Z0-9_-]+)|clips\.twitch\.tv\/([a-zA-Z0-9_-]+)/);
+  return m ? (m[1] || m[2]) : null;
+}
+function getInstagramReel(url) {
+  var m = url.match(/instagram\.com\/(?:reels?|p)\/([a-zA-Z0-9_-]+)/);
+  return m ? m[1] : null;
+}
+function getTikTok(url) {
+  var m = url.match(/tiktok\.com\/@[\w.]+\/video\/(\d+)/);
+  return m ? m[1] : null;
+}
+
+function setPlatform(name, color) {
+  var b = document.getElementById('platform-badge');
+  b.textContent = name;
+  b.style.background = color;
+  b.style.color = 'white';
+}
+
+function setAspectRatio(w, h) {
+  var frame = document.querySelector('.video-frame');
+  frame.style.aspectRatio = w + '/' + h;
+}
+
+// Llama al servidor local (yt-dlp) para obtener la URL directa del MP4
+function fetchDirectUrl(url, onSuccess, onError) {
+  log('yt-dlp: descargando...');
+  fetch('http://localhost:8765/video-url?url=' + encodeURIComponent(url))
+    .then(function(r) {
+      if (r.status === 409) return null; // cancelado por request más nueva, ignorar
+      return r.json();
+    })
+    .then(function(data) {
+      if (!data) return;
+      if (data.url) {
+        onSuccess(data.url);
+      } else {
+        onError('yt-dlp: ' + (data.error || 'sin URL'));
+      }
+    })
+    .catch(function(e) {
+      onError('fetch error: ' + e.message);
+    });
+}
+
+function showDirectVideo(videoUrl) {
+  var iframe = document.getElementById('video-iframe');
+  var video  = document.getElementById('direct-video');
+  var overlay = document.getElementById('loading-overlay');
+
+  iframe.style.display = 'none';
+  video.style.display = 'block';
+
+  // Reset limpio
+  video.pause();
+  video.removeAttribute('src');
+  video.load();
+
+  video.muted = true;
+  video.src = videoUrl;
+  video.load();
+
+  video.onloadedmetadata = function() {
+    if (video.videoWidth && video.videoHeight) {
+      setAspectRatio(video.videoWidth, video.videoHeight);
+      log('Video: ' + video.videoWidth + 'x' + video.videoHeight);
+    }
+  };
+
+  log('Video: cargando ' + videoUrl.substring(0, 40));
+
+  video.onerror = function() {
+    var codes = ['', 'ABORTED', 'NETWORK', 'DECODE', 'SRC_NOT_SUPPORTED'];
+    var code = video.error ? (codes[video.error.code] || video.error.code) : 'desconocido';
+    log('Video error: ' + code);
+    overlay.style.display = 'none';
+  };
+
+  video.oncanplay = function() {
+    video.oncanplay = null;
+    log('Video: canplay OK, reproduciendo...');
+    overlay.style.display = 'none';
+    video.onended = function() {
+      video.onended = null;
+      clearTimeout(hideTimer);
+      alertDone();
+    };
+    video.play().then(function() {
+      setTimeout(function() { video.muted = false; }, 200);
+      startHideTimer();
+    }).catch(function(e) {
+      log('Play error: ' + e.message);
+      startHideTimer();
+    });
+  };
+}
+
+function alertDone() {
+  var container = document.getElementById('alert-container');
+  container.classList.add('hiding');
+  setTimeout(function() {
+    container.classList.remove('visible', 'hiding', 'wide');
+    var v = document.getElementById('direct-video');
+    v.oncanplay = null;
+    v.onerror   = null;
+    v.pause();
+    v.removeAttribute('src');
+    v.load();
+    document.getElementById('video-iframe').src = 'about:blank';
+    alertBusy = false;
+    processQueue();
+  }, 450);
+}
+
+function processQueue() {
+  if (alertBusy || alertQueue.length === 0) return;
+  alertBusy = true;
+  var item = alertQueue.shift();
+  log('Cola: procesando ' + item.username + ' (' + alertQueue.length + ' restantes)');
+  showAlert(item.username, item.url);
+}
+
+function enqueueAlert(username, url) {
+  alertQueue.push({ username: username, url: url });
+  log('Cola: ' + alertQueue.length + ' en espera');
+  processQueue();
+}
+
+function startHideTimer() {
+  clearTimeout(hideTimer);
+  hideTimer = setTimeout(alertDone, DISPLAY_DURATION);
+}
+
+function showAlert(username, url) {
+  var container = document.getElementById('alert-container');
+  container.classList.remove('visible', 'hiding', 'wide');
+
+  var iframe  = document.getElementById('video-iframe');
+  var video   = document.getElementById('direct-video');
+  var overlay = document.getElementById('loading-overlay');
+
+  // Reset
+  iframe.src = 'about:blank';
+  iframe.style.display = 'none';
+  video.oncanplay        = null;
+  video.onerror          = null;
+  video.onloadedmetadata = null;
+  video.onended          = null;
+  video.pause();
+  video.removeAttribute('src');
+  video.load();
+  video.style.display = 'none';
+  overlay.style.display = 'none';
+  setAspectRatio(16, 9);
+
+  document.getElementById('share-username').textContent = username;
+  document.getElementById('video-title').textContent = 'Cargando...';
+  document.getElementById('video-meta').textContent = '';
+
+  var ytId    = getYouTubeId(url);
+  var twClip  = getTwitchClip(url);
+  var igReel  = getInstagramReel(url);
+  var tikTok  = getTikTok(url);
+
+  if (ytId) {
+    var isShort = /youtube\.com\/shorts\//.test(url);
+    setPlatform(isShort ? 'YouTube Short' : 'YouTube', '#ff0000');
+    if (isShort) {
+      setAspectRatio(9, 16);
+    } else {
+      setAspectRatio(16, 9);
+      container.classList.add('wide');
+    }
+    iframe.style.display = 'block';
+    iframe.src = 'https://www.youtube.com/embed/' + ytId + '?autoplay=1&mute=0';
+    document.getElementById('video-title').textContent = isShort ? 'YouTube Short' : 'Video de YouTube';
+    document.getElementById('video-meta').textContent = 'youtube.com';
+    fetch('https://www.youtube.com/oembed?url=https://www.youtube.com/watch?v=' + ytId + '&format=json')
+      .then(function(r){ return r.json(); })
+      .then(function(d){
+        document.getElementById('video-title').textContent = d.title || 'Video de YouTube';
+        document.getElementById('video-meta').textContent = d.author_name || 'youtube.com';
+      }).catch(function(){});
+    startHideTimer();
+
+  } else if (twClip) {
+    setPlatform('Twitch Clip', '#6441a5');
+    setAspectRatio(16, 9);
+    container.classList.add('wide');
+    iframe.style.display = 'block';
+    iframe.src = 'https://clips.twitch.tv/embed?clip=' + twClip + '&parent=localhost&parent=127.0.0.1&autoplay=true&muted=false';
+    document.getElementById('video-title').textContent = 'Clip de Twitch';
+    document.getElementById('video-meta').textContent = 'twitch.tv';
+    startHideTimer();
+
+  } else if (igReel) {
+    setPlatform('Instagram', '#c13584');
+    overlay.style.display = 'flex';
+    document.getElementById('video-title').textContent = 'Reel de Instagram';
+    document.getElementById('video-meta').textContent = 'instagram.com';
+    fetchDirectUrl(url,
+      function(videoUrl) {
+        log('Instagram MP4 OK');
+        showDirectVideo(videoUrl);
+      },
+      function(err) {
+        log('Instagram error: ' + err);
+        overlay.style.display = 'none';
+        document.getElementById('video-title').textContent = '⚠ No se pudo cargar el reel';
+        startHideTimer();
+      }
+    );
+
+  } else if (tikTok) {
+    setPlatform('TikTok', '#010101');
+    overlay.style.display = 'flex';
+    document.getElementById('video-title').textContent = 'Video de TikTok';
+    document.getElementById('video-meta').textContent = 'tiktok.com';
+    fetchDirectUrl(url,
+      function(videoUrl) {
+        log('TikTok MP4 OK');
+        showDirectVideo(videoUrl);
+        fetch('https://www.tiktok.com/oembed?url=' + encodeURIComponent(url))
+          .then(function(r){ return r.json(); })
+          .then(function(d){
+            document.getElementById('video-title').textContent = d.title || 'Video de TikTok';
+            document.getElementById('video-meta').textContent = d.author_name ? '@' + d.author_name + ' · tiktok.com' : 'tiktok.com';
+          }).catch(function(){});
+      },
+      function(err) {
+        log('TikTok error: ' + err);
+        overlay.style.display = 'none';
+        document.getElementById('video-title').textContent = '⚠ No se pudo cargar el TikTok';
+        startHideTimer();
+      }
+    );
+
+  } else {
+    log('URL no soportada: ' + url);
+    alertBusy = false;
+    processQueue();
+    return;
+  }
+
+  log('Mostrando alerta: ' + username + ' -> ' + url.substring(0,40));
+  void container.offsetWidth;
+  container.classList.add('visible');
+}
+
+function connectTwitch() {
+  log('Conectando a Twitch IRC: #' + CHANNEL);
+  ws = new WebSocket('wss://irc-ws.chat.twitch.tv:443');
+
+  ws.onopen = function() {
+    log('WebSocket abierto, autenticando...');
+    ws.send('PASS oauth:q42n4n2n4n2n4n2');
+    ws.send('NICK justinfan' + Math.floor(Math.random() * 99999));
+    ws.send('JOIN #' + CHANNEL.toLowerCase());
+  };
+
+  ws.onmessage = function(e) {
+    var raw = e.data.trim();
+    if (raw.indexOf('PING') === 0) { ws.send('PONG :tmi.twitch.tv'); return; }
+    if (raw.indexOf('366') > -1) { log('Conectado al chat de #' + CHANNEL + ' OK'); return; }
+
+    var match = raw.match(/:(\w+)!\w+@\w+\.tmi\.twitch\.tv PRIVMSG #\w+ :(.+)/);
+    if (!match) return;
+
+    var user = match[1];
+    var msg  = match[2];
+    var urls = msg.match(/https?:\/\/(www\.)?(youtube\.com|youtu\.be|twitch\.tv|clips\.twitch\.tv|tiktok\.com|instagram\.com)\/\S+/gi);
+    if (urls) {
+      log('Link detectado de ' + user);
+      enqueueAlert(user, urls[0]);
+    }
+  };
+
+  ws.onerror = function(e) { log('Error WS: ' + e.type); };
+  ws.onclose = function() {
+    log('WS cerrado, reconectando en 5s...');
+    setTimeout(connectTwitch, 5000);
+  };
+}
+
+log('HTML cargado OK');
+connectTwitch();
+</script>
+</body>
+</html>
